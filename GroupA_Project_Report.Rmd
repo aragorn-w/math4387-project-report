@@ -1,0 +1,733 @@
+---
+title: "Project Summary"
+author: "Aragorn Wang - Brock Sowa - Eric Flores - Mikias Mengistu"
+subtitle: Financial and Academic Factors' Impact on U.S. Undergraduate Program Completion
+  Rates
+output:
+  word_document: default
+  pdf_document: default
+---
+
+```{r, tidy = TRUE, tidy.opts=list(width.cutoff=60), include = FALSE}
+# Installing packages
+library(dplyr)
+library(tidyverse)
+library(ggplot2)
+library(leaps)
+library(cba)
+library(caret)
+library(car)
+library(formatR)
+library(effects)
+
+# Reading csv
+inst_csv <- read.csv("Most-Recent-Cohorts-Institution.csv")
+
+# Selecting specific variables (17 variables)
+inst_original <- inst_csv %>%
+  select(c("INSTNM", "CONTROL", "REGION", "ADM_RATE", 
+           "C200_4_POOLED", "PFTFAC", "AVGFACSAL",
+           "INEXPFTE", "FAMINC", "COSTT4_A", "TUITFTE",
+           "DEBT_MDN"))
+
+# Renaming variables
+names(inst_original) <- c("institution_name", "institution_type", "region", "admission_rate",
+                        "completion_rate_200", "faculty_fulltime", "faculty_salary_avg",
+                        "expenditure_per_student", "family_income", "cost_attendance_per_year",
+                        "tuition_revenue_per_student", "debt_median_all")
+
+# Changing data types of variables
+inst_original$completion_rate_200 <- as.numeric(inst_original$completion_rate_200)
+inst_original$institution_type <- as.factor(inst_original$institution_type)
+inst_original$region <- as.factor(inst_original$region)
+inst_original$admission_rate <- as.numeric(inst_original$admission_rate)
+inst_original$faculty_fulltime <- as.numeric(inst_original$faculty_fulltime)
+inst_original$faculty_salary_avg <- as.numeric(inst_original$faculty_salary_avg)
+inst_original$expenditure_per_student <- as.numeric(inst_original$expenditure_per_student)
+inst_original$family_income <- as.numeric(inst_original$family_income)
+inst_original$cost_attendance_per_year <- as.numeric(inst_original$cost_attendance_per_year)
+inst_original$tuition_revenue_per_student <- as.numeric(inst_original$tuition_revenue_per_student)
+inst_original$debt_median_all <- as.numeric(inst_original$debt_median_all)
+
+# Changing levels
+levels(inst_original$institution_type) <- c("public", "private_non_profit", "private_for_profit")
+levels(inst_original$region) <- c("us_service_schools", "new_england", "mid_east", 
+                                "great_lakes", "plains", "southeast", "southwest", 
+                                "rocky_mountains", "far_west", "outlying_areas")
+```
+
+```{r, tidy = TRUE, tidy.opts=list(width.cutoff=60), include = FALSE}
+# Dealing with the missing values
+sum(is.na(inst_original$institution_name))
+# no missing institution names
+
+colSums(is.na(inst_original) / nrow(inst_original))
+# about 70% of the values for the response variable are missing
+
+# Drop observations with missing value for completion_rate_200
+inst_drop <- inst_original[!is.na(inst_original$completion_rate_200), ]
+colSums(is.na(inst_drop) / nrow(inst_drop))
+# all other variables have below 18% of their values as missing, so we simply drop rows with any NAs
+inst_drop <- na.omit(inst_drop)
+
+# Dataset without names
+inst_data <- inst_drop[, !names(inst_drop) %in% c("institution_name")]
+```
+
+# Introduction
+
+## Question of interest.
+
+*Describe your question of interest. What specific question are your trying to answer?*
+
+We are hoping to determine what factors positively or negatively affect undergraduate degree completion rate. Some example factors we'd like to consider are as follows: - How do student and faculty expenses affect student completion rates for four-year degree programs? - Do certain SAT section scores have a stronger correlation with students' four-year degree completion rates than other SAT sections' scores?
+
+## Importance
+
+*Explain why this topic is important (why should we care)?*
+
+We hope to answer some questions so that students or institutions focus school choice and/or policy decisions to increase the probability of completing a 4-year undergraduate degree.
+
+## Background
+
+*Provide background information to put your analysis into context.*
+
+We retrieved our data from the U.S. Department of Education's College Scorecard:
+
+-   Primary Website: <https://collegescorecard.ed.gov/data/>
+-   Primary Dataset: <https://ed-public-download.app.cloud.gov/downloads/Most-Recent-Cohorts-Institution_09012022.zip>
+-   Additional Dataset: <https://ed-public-download.app.cloud.gov/downloads/Most-Recent-Cohorts-Field-of-Study_09012022.zip>
+
+The data set has 6,681 observations. Each observation is an institution of higher learning, differentiated by an Institution Name and/or Office of Postsecondary Education Identifier (OPEID) code.
+
+## Variables
+
+*Provide a table that includes the variables you will use in your analysis. The table should have 3 columns: `name`, `type`, and `description`. The `name` column is the name of the variable, `type` is the type of data (`numeric (continous)`, `numeric (discrete)`, `factor`, `date`, `time`, etc.), while the `description` column summarizes what the variable measures (make sure to include units!) **Your response variable should be the first row of the table**.*
+
+| cleaned_name                  | original_name   |          type          | description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+|:-----------------|:-----------------|:----------------:|:------------------|
+| `completion_rate_200`         | `C200_4_POOLED` | `numeric` (continuous) | Completion rate for first-time, full-time bachelor's-degree-seeking students at four-year institutions (200% of expected time to completion), pooled for two year rolling averages                                                                                                                                                                                                                                                                                                                                                 |
+| `institution_type`            | `CONTROL`       |        `factor`        | Control of institution with 3-levels: ( 1 = `public`, 2 = `private_non_profit`, 3 = `private_for_profit` )                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `region`                      | `REGION`        |        `factor`        | Integrated Postsecondary Education Data System (IPEDS) Region with 10-levels: ( 0 = `us_service_schools`, 1 = `new_england` (CT, ME, MA, NH, RI, VT), 2 = `mid_east` (DE, DC, MD, NJ, NY, PA), 3 = `great_lakes` (IL, IN, MI, OH, WI), 4 = `plains` (IA, KS, MN, MO, NE, ND, SD), 5 = `southeast` (AL, AR, FL, GA, KY, LA, MS, NC, SC, TN, VA, WV), 6 = `southwest` (AZ, NM, OK, TX), 7 = `rocky_mountains` (CO, ID, MT, UT, WY), 8 = `far_west` (AK, CA, HI, NV, OR, WA), 9 = `outlying_areas` (AS, FM, GU, MH, MP, PR, PW, VI) ) |
+| `admission_rate`              | `ADM_RATE`      | `numeric` (continuous) | Admission rate                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `faculty_fulltime`            | `PFTFAC`        | `numeric` (continuous) | Proportion of faculty that is full-time                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `faculty_salary_avg`          | `AVGFACSAL`     | `numeric` (continuous) | Average faculty salary                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `expenditure_per_student`     | `INEXPFTE`      |  `numeric` (discrete)  | Instructional expenditures per full-time equivalent student                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `family_income`               | `FAMINC`        | `numeric` (continuous) | Average family income                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| `cost_attendance_per_year`    | `COSTT4_A`      |  `numeric` (discrete)  | Average cost of attendance (academic year institutions)                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `tuition_revenue_per_student` | `TUITFTE`       |  `numeric` (discrete)  | Net tuition revenue per full-time equivalent student                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `debt_median_all`             | `DEBT_MDN`      |  `numeric` (discrete)  | The median original amount of the loan principal upon entering repayment                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+
+# Data exploration
+
+## Numeric Summaries
+
+*Provide a numeric summary (think 5- or 6-number summary) of the response variable and at least 3 predictors.*
+
+### Summaries of `completion_rate_200`
+
+```{r, tidy = TRUE, tidy.opts=list(width.cutoff=60), echo = FALSE, warning=FALSE}
+# summaries of completion_rate_200, plus addition function separating results by institution_type variable
+summary(inst_data$completion_rate_200)
+```
+
+**Separated by** `institution_type` variable
+
+```{r, tidy = TRUE, tidy.opts=list(width.cutoff=60), echo = FALSE, warning=FALSE}
+by(inst_data$completion_rate_200, inst_data$institution_type, summary)
+```
+
+### Summaries of `faculty_salary_average`
+
+```{r, tidy = TRUE, tidy.opts=list(width.cutoff=60), echo = FALSE, warning=FALSE}
+# summaries of faculty_salary_average, plus addition function separating results by institution_type variable
+summary(inst_data$faculty_salary_avg)
+```
+
+**Separated by** `institution_type` variable
+
+```{r, tidy = TRUE, tidy.opts=list(width.cutoff=60), echo = FALSE, warning=FALSE}
+by(inst_data$faculty_salary_avg, inst_data$institution_type, summary)
+```
+
+### Summaries of `cost_attendance_per_year`
+
+```{r, tidy = TRUE, tidy.opts=list(width.cutoff=60), echo = FALSE, warning=FALSE}
+# summaries of cost_attendance_per_year, plus addition function separating results by institution_type variable
+summary(inst_data$cost_attendance_per_year)
+```
+
+**Separated by** `institution_type` variable
+
+```{r, tidy = TRUE, tidy.opts=list(width.cutoff=60), echo = FALSE, warning=FALSE}
+by(inst_data$cost_attendance_per_year, inst_data$institution_type, summary)
+```
+
+We do observe a large amount of `NA` values in our dataset, which will reduce the number of rows that our regression model will calculate with. Altogether, the data set contains 6,681 observations. The variables in our final model have 1,187 rows with no `NA` values. We still feel this is an adequately representative sample, as our scatter plots appear to be consistent with our regression lines computed by both the parallel lines and separate lines models.
+
+## Univariate graphics
+
+*Provide a density plot of the response. Provide a univariate plot for 3 predictors. If the predictor is continuous, use a density plot. If the predictor is discrete, use a histogram. If the predictor is categorical, use a bar plot. Provide a brief interpretation of each graphic (unimodal, bimodal, skewness, unusual observations, etc.). I would focus on the 3 predictors that are most related to the response. A univariate graphic only includes a single variable.*
+
+### Density plot of `completion_rate_200`
+
+```{r, tidy = TRUE, tidy.opts=list(width.cutoff=60), echo = FALSE}
+ggplot(inst_data) + 
+  geom_density(aes(x = completion_rate_200)) +
+  ggtitle("Density of Completion Rate")
+```
+
+**Interpretation of** `completion_rate_200`
+
+The unimodal distribution of the completion rate appears to be just a little left-skewed. The main bulk of admission rates appear to reside near 0.55.
+
+### Density plot of `admission_rate`
+```{r, tidy = TRUE, tidy.opts=list(width.cutoff=60), echo = FALSE}
+ggplot(inst_data) + 
+  geom_density(aes(x = admission_rate)) +
+  ggtitle("Density of Admission Rate")
+```
+
+**Interpretation of** `admission_rate`
+
+The unimodal distribution of the admission rate appears to be left-skewed, indicating that a squaring transformation might be useful. The main bulk of admission rates appear to reside near 0.75.
+
+### Density plot of `expenditure_per_student`
+
+```{r, tidy = TRUE, tidy.opts=list(width.cutoff=60), echo = FALSE}
+ggplot(inst_data) + 
+  geom_density(aes(x = expenditure_per_student)) +
+  ggtitle("Density of Expenditure Per Student")
+```
+
+### Density plot of `family_income`
+
+```{r, tidy = TRUE, tidy.opts=list(width.cutoff=60), echo = FALSE}
+ggplot(inst_data) + 
+  geom_density(aes(x = family_income)) +
+  ggtitle("Density of Average Family Income")
+```
+
+**Interpretation of** `family_income`
+
+The unimodal distribution of the average family income appears to be right-skewed, indicating that a square root transformation might be useful. The bulk of the average family income appears to be near $62,000.
+
+## Multivariate graphic
+
+*Provide a bivariate plot of the response versus a predictor or a grouped scatterplot of the response variable versus a predictor with coloring based on a third graphic. Note: include the graphic that is most interesting and useful so you can support your later conclusions. Interpret the plot.*
+
+### Density Plots of Completion Rate by Institution Type
+```{r, tidy = TRUE, tidy.opts=list(width.cutoff=60), warning=FALSE, echo=FALSE}
+# Density plot of completion_rate_200 variable, separated by institution_type variable
+ggplot(inst_data) + 
+  geom_density(aes(x = completion_rate_200, fill = institution_type), alpha = 0.5) +
+  ggtitle("Density of Completion Rate")
+```
+
+**Interpretation of** `completion_rate_200`
+
+The density plot utilizes the `factor` variable `institution_type`. We observe completion rates for **private for-profit** institutions is noticeably smaller than completion rates for **public** and **private non-profit** institutions.
+
+### Grouped Scatter Plots of Yearly Cost of Attendance vs. Completion Rate by Institution Type
+```{r, tidy = TRUE, tidy.opts=list(width.cutoff=60), warning=FALSE, echo=FALSE}
+ggplot(inst_data) +
+  geom_point(aes(x = cost_attendance_per_year, y = completion_rate_200, 
+                 shape = institution_type, color = institution_type), alpha = 0.5) +
+  ggtitle("Cost of Attendance vs Completion Rate")
+```
+
+### Parallel Box Plots of Yearly Cost of Attendance vs. Completion Rate by Institution Type
+```{r, tidy = TRUE, tidy.opts=list(width.cutoff=60), warning=FALSE, echo=FALSE}
+ggplot(inst_data) + 
+  geom_boxplot(aes(x = cost_attendance_per_year, y = completion_rate_200, fill = institution_type), alpha = 0.5) +
+  ggtitle("Cost of Attendance vs Completion Rate")
+```
+
+**Interpretation of** `cost_attendance_per_year` **vs** `completion_rate_200`
+
+Provided a grouped scatterplot and a boxplot for the `cost_attendance_per_year` versus the `completion_rate_200` variables, separated by the `institution_type` variable. We note the similarities between completion rate with respect to public and private non-profit institutions. We also not that there does not appear to be a significant relationship between cost of attendance and completion rate. That is to say, there appears to be a marginal benefit, but we feel that could be attributed to selection bias for students who choose or have the resources to attend private non-profit institutions. Our assessment is that attending institutions where cost is higher is of less importance as it relates to the completion rate. This is not an assessment of perceived quality of education or prospective employment opportunities post graduation.
+
+### Density Plots of Average Faculty Salary by Institution Type
+```{r, tidy = TRUE, tidy.opts=list(width.cutoff=60), warning=FALSE, echo=FALSE}
+# Density plot of faculty_salary_avg variable, separated by institution_type variable
+ggplot(inst_data) + geom_density(aes(x = faculty_salary_avg, fill = institution_type), alpha = 0.5)
+```
+
+**Interpretation of** `faculty_salary_avg`
+
+The average faculty salary for public and private non-profit institutions appear to be similar. Average faculty salary for private for-profit institutions appears to be lower.
+
+### Density Plots of Yearly Cost of Attendance by Institution Type
+```{r, tidy = TRUE, tidy.opts=list(width.cutoff=60), warning=FALSE, echo=FALSE}
+# Density plot of cost_attendance_per_year variable, separated by institution_type variable
+ggplot(inst_data) + geom_density(aes(x = cost_attendance_per_year, fill = institution_type), alpha = 0.5)
+```
+
+**Interpretation of** `cost_attendance_per_year`
+
+Cost of attendance varies widely depending on the institution type. Cost of attendance at public institutions is lower than for private for-profit institutions. Cost of attendance at private non-profit institutions varies widely; the density plot is much flatter than with the other two institutions types.
+
+# Variable selection
+
+## Perform variable selection using at least two selection criteria.
+
+## Full Model Fit
+
+```{r}
+lmod_full <- lm(completion_rate_200 ~ . + I(admission_rate^2) + sqrt(faculty_salary_avg) + log(expenditure_per_student) + sqrt(family_income), data = inst_data)
+(summary_full <- summary(lmod_full))
+```
+
+## Forward Selection with BIC
+
+```{r}
+lmod_0 <- lm(completion_rate_200 ~ 1, data = inst_data)
+lmod_forward <- step(lmod_0, scope = formula(lmod_full), direction = "forward", k = log(nobs(lmod_full)))
+(summary_forward <- summary(lmod_forward))
+```
+```{r}
+# Fixing the model hierarchy of the forward selection model
+lmod_forward <- lm(completion_rate_200 ~ region + admission_rate + faculty_salary_avg + family_income + sqrt(family_income) + log(expenditure_per_student) + debt_median_all, data = inst_data)
+(summary_forward <- summary(lmod_forward))
+length(coef(lmod_forward))
+```
+
+## Backward Selection with BIC
+
+```{r}
+drop1(lmod_full, test = "F", k = log(nobs(lmod_full)))
+```
+
+```{r}
+lmod_backward <- update(lmod_full, formula = . ~ . - family_income)
+drop1(lmod_backward, test = "F", k = log(nobs(lmod_full)))
+```
+
+```{r}
+lmod_backward <- update(lmod_backward, formula = . ~ . - faculty_fulltime)
+drop1(lmod_backward, test = "F", k = log(nobs(lmod_full)))
+```
+
+```{r}
+lmod_backward <- update(lmod_backward, formula = . ~ . - institution_type)
+drop1(lmod_backward, test = "F", k = log(nobs(lmod_full)))
+```
+
+```{r}
+# Model hierarchy for the backward selection model is already fine (all levels of region are included)
+(summary_backward <- summary(lmod_backward))
+```
+
+## Best Subset Selection
+
+```{r}
+reg_best <- regsubsets(formula(lmod_full), data = inst_data, nvmax = 25)
+(summary_best <- summary(reg_best))
+```
+
+### Adj R2 by Regressors
+
+```{r}
+plot(summary_best$adjr2 ~ seq(from = 2, to = length(summary_best$adjr2) + 1),
+  xlab = "p", 
+  ylab = "Adjusted R-squared",
+  ylim = c(0, 1))
+```
+
+### BIC Scale
+
+```{r, echo = FALSE}
+plot(reg_best, scale = "bic")
+
+best_bic_index <- which.min(summary_best$bic)
+summary_best$which[best_bic_index, ]
+```
+```{r}
+# Fixing the model hierarchy of the best subset model (BIC)
+lmod_best_bic <- lm(completion_rate_200 ~ institution_type + region + admission_rate + faculty_salary_avg + tuition_revenue_per_student + debt_median_all + log(expenditure_per_student) + sqrt(family_income), data = inst_data)
+(summary_best_bic <- summary(lmod_best_bic))
+nrow(summary_best_bic$coefficients)
+```
+
+### Using Mallow's Cp
+
+```{r, echo = FALSE}
+best_p <- seq_along(summary_best$cp) + 1
+plot(summary_best$cp ~ best_p, ylab = "Mallow's Cp", ylim = c(0, max(best_p)), xaxp = c(2, reg_best$np + 1, reg_best$np - 1), cex.axis = 0.7)
+abline(0, 1)
+
+summary_best$which[15, ]
+```
+```{r}
+# Fixing the model hierarchy of the best subset model (Mallow's Cp)
+lmod_best_mcp <- lm(completion_rate_200 ~ institution_type + region + admission_rate + faculty_salary_avg + expenditure_per_student + cost_attendance_per_year + tuition_revenue_per_student + debt_median_all + I(admission_rate^2) + sqrt(faculty_salary_avg) + log(expenditure_per_student) + sqrt(family_income), data = inst_data)
+(summary_best_mcp <- summary(lmod_best_mcp))
+length(coef(lmod_best_mcp))
+```
+
+## Stepwise Selection with BIC
+
+```{r}
+lmod_step <- step(lmod_full, direction = "both", k = log(nobs(lmod_full)))
+(summary_step <- summary(lmod_step))
+```
+```{r}
+# Fixing the model hierarchy of the stepwise model
+lmod_step <- lm(completion_rate_200 ~ region + admission_rate + faculty_salary_avg + expenditure_per_student + cost_attendance_per_year + tuition_revenue_per_student + sqrt(faculty_salary_avg) + log(expenditure_per_student) + sqrt(family_income), data = inst_data)
+(summary_step <- summary(lmod_step))
+length(coef(lmod_step))
+```
+
+## Choosing a Model
+
+```{r, echo = FALSE}
+# Extract variable names from each model (exclude the intercept)
+vars_full <- names(coef(lmod_full)[-1])
+vars_forward <- names(coef(lmod_forward)[-1])
+vars_backward <- names(coef(lmod_backward)[-1])
+vars_best_bic <- names(coef(lmod_best_bic)[-1])
+vars_best_mcp <- names(coef(lmod_best_mcp)[-1])
+vars_stepwise <- names(coef(lmod_step)[-1])
+
+# Combine variable names from all models
+all_vars <- unique(c(vars_full, vars_forward, vars_backward, vars_best_bic, vars_best_mcp, vars_stepwise))
+
+# Create a matrix to store variable inclusion information
+# MCP means Mallow's Cp
+strategy_names <- c("Full", "Forward", "Backward", "Best Subset (BIC)", "Best Subset (MCP)", "Stepwise")
+var_matrix <- matrix(FALSE, nrow = length(all_vars), ncol = length(strategy_names), dimnames = list(all_vars, strategy_names))
+
+# Update the matrix based on variable inclusion
+var_matrix[vars_full, "Full"] <- TRUE
+var_matrix[vars_forward, "Forward"] <- TRUE
+var_matrix[vars_backward, "Backward"] <- TRUE
+var_matrix[vars_best_bic, "Best Subset (BIC)"] <- TRUE
+var_matrix[vars_best_bic, "Best Subset (MCP)"] <- TRUE
+var_matrix[vars_stepwise, "Stepwise"] <- TRUE
+
+# Not applicable to look at the rows for the factors of either region or institution_type
+clmplot(var_matrix)
+axis(1, at = seq(1, length(strategy_names)), labels = strategy_names, cex.axis = 0.6)
+axis(2, at = seq(1, length(all_vars)), labels = all_vars, las = 1, cex.axis = 0.4)
+```
+
+### Comparing Adjustd R2's
+
+```{r}
+summary_full$adj.r.squared
+summary_forward$adj.r.squared
+summary_backward$adj.r.squared
+summary_best_bic$adj.r.squared
+summary_best_mcp$adj.r.squared
+summary_step$adj.r.squared
+```
+
+### Comparing number of regressors
+
+```{r}
+nrow(summary_full$coefficients)
+nrow(summary_forward$coefficients)
+nrow(summary_backward$coefficients)
+nrow(summary_best_bic$coefficients)
+nrow(summary_best_mcp$coefficients)
+nrow(summary_step$coefficients)
+```
+
+## Cross-Validation
+
+### 5-Fold Cross Validation
+```{r}
+# Since all the models have a fairly similar Adjusted R^2, we use cross-validation to pick between the forward selection model and the best subset (BIC) model, since both models have few regressors in comparison to the other models
+set.seed(42)
+cv_5fold <- trainControl(method="cv", number = 5)
+
+forward_model <- train(formula(lmod_forward), data = inst_data, trControl = cv_5fold, method = "lm")
+best_bic_model <- train(formula(lmod_best_bic), data = inst_data, trControl = cv_5fold, method = "lm")
+
+resamp <- resamples(list(forward_model, best_bic_model), modelNames = c("forward", "best subset (bic)"))
+summary(resamp, metric = c("RMSE", "MAE"))
+```
+
+### LOO Cross Validation
+```{r}
+cv_loo <- trainControl(method="LOOCV")
+forward_model <- train(formula(lmod_forward), data = inst_data, trControl = cv_loo, method = "lm")
+best_bic_model <- train(formula(lmod_best_bic), data = inst_data, trControl = cv_loo, method = "lm")
+
+forward_model$results
+best_bic_model$results
+```
+
+*Explain what you did and your conclusions.*
+
+We ran ordinary fitting (the "full" model with all the variable transformations mainly mentioned in the Data Exploration section), forward selection, backward selection, best subset regression (with BIC and Mallow's Cp), and stepwise selection (with BIC).
+
+We then compared the $R_a^2$ and number of regressors of these five models, discovering that all five models had very similar $R_a^2$ statistics (within 1% to 2%).
+
+Thus, we further investigated the differences between the forward selection and best subset (by BIC) models, since these two models had the fewest regressors while also looking very promising (in terms of $R_a^2$ and average individual-variable explanatory power).
+
+Using both 5-fold cross validation and LOO cross validation, we saw similar statistics for both models, and thus decided to go with the forward selection model since it has two fewere regressors.
+
+## Provide your final model
+
+```{r}
+lmod_final <- lmod_forward
+summary(lmod_final)
+```
+
+Our final model is (rounded to three significant figures)
+$$
+\begin{aligned}
+\widehat{completion\_rate\_200} = &-0.529 \\
+&- 0.0165 \, D_{new\_england} \\
+&- 0.0143 \, D_{mid\_east} \\
+&- 0.0137 \, D_{great\_lakes} \\
+&- 0.136 \, D_{plains} \\
+&- 0.147 \, D_{southeast} \\
+&- 0.173 \, D_{southwest} \\
+&- 0.135 \, D_{rocky\_mountains} \\
+&- 0.105 \, D_{far\_west} \\
+&+ 7.78 \, D_{outlying_areas} \\
+&- 0.0812 \, admission\_rate \\
+&+ 0.0000193 \, faculty\_salary\_avg \\
+&- 0.00000105 \, family\_income \\
+&+ 0.00226 \, \sqrt{family\_income} \\
+&+ 0.0599 \, \log (expenditure\_per\_student) \\
+&+ 0.00000518 \, debt\_median\_all \, .\\
+\end{aligned}
+$$
+
+# Model evaluation
+
+## Check the structure of your model
+
+### Residual Plot with Fitted Values
+```{r, echo = FALSE}
+residualPlot(lmod_final, quadratic = FALSE)
+```
+
+### Residual Plot with `region`
+```{r, echo = FALSE}
+residualPlot(lmod_final, variable = "region", quadratic = FALSE)
+```
+
+### Residual Plot with `admission_rate`
+```{r, echo = FALSE}
+residualPlot(lmod_final, variable = "admission_rate", quadratic = FALSE)
+```
+
+### Residual Plot with `faculty_salary_avg`
+```{r, echo = FALSE}
+residualPlot(lmod_final, variable = "faculty_salary_avg", quadratic = FALSE)
+```
+
+### Residual Plot with `family_income`
+```{r, echo = FALSE}
+residualPlot(lmod_final, variable = "family_income", quadratic = FALSE)
+```
+
+### Residual Plot with `sqrt(family_income)`
+```{r, echo = FALSE}
+residualPlot(lmod_final, variable = "sqrt(family_income)", quadratic = FALSE)
+```
+
+### Residual Plot with `log(expenditure_per_student)`
+```{r, echo = FALSE}
+residualPlot(lmod_final, variable = "log(expenditure_per_student)", quadratic = FALSE)
+```
+
+### Residual Plot with `debt_median_all`
+```{r, echo = FALSE}
+residualPlot(lmod_final, variable = "debt_median_all", quadratic = FALSE)
+```
+
+*Explain what you did and your conclusions.*
+
+After our variable transformations to variables such as `family_income` and `expenditure_per_student`, we've been able to see that our structural assumptions are fairly satisfied. However, the right-side end of the residual plots for the fitted values and `expenditure_per_student` variable look somewhat asymmetrical and trending by some decreasing.
+
+But overall, since we've observed the symmetry and randomness of each of our residual plots for the fitted values and for each of our model's regressors to be fairly symmetric and random, respectively, it appears that the structural assumption of our model is satisfied.
+
+## Check for influential observations
+
+### DFBETAS Plot
+```{r, echo = FALSE}
+dfbetasPlots(lmod_final, terms = ~ region + admission_rate + faculty_salary_avg + family_income + sqrt(family_income) + log(expenditure_per_student) + debt_median_all, id.n = 5)
+```
+
+```{r}
+#inst_data[c(NUM, NUM, NUM), c("region", "admission_rate", "faculty_salary_avg", "family_income", "expenditure_per_student", "debt_median_all")]
+```
+
+### DFFITS Plot
+```{r, echo = FALSE}
+DFFITS <- dffits(lmod_final)
+plot(DFFITS)
+```
+```{r}
+which(abs(DFFITS) > 0.7)
+```
+
+### Influence Index Plot
+```{r, echo = FALSE}
+infIndexPlot(lmod_final, var = "Cook", id = list(n = 5))
+```
+
+### Influence Plot
+```{r, echo = FALSE}
+influencePlot(lmod_final)
+```
+
+### Standardized Residuals vs Leverage
+```{r, echo = FALSE}
+plot(lmod_final, which = 5)
+```
+
+```{r}
+(inf_obs <- inst_original[c(1597, 3740, 869, 3771, 3696, 1438, 1440), ])
+```
+
+*Explain what you did and your conclusions.*
+
+We created and looked at DFBETAS plots, DFFITS plots, influence index plots, influence plots ,and standardized residuals versus leverage plots.
+
+And we narrowed down 7 influential observations that were prevalent throughout most of the plots.
+
+We see that, generally, these 7 influential observations have high admission rates, extreme completion rates, low average faculty salaries, and extreme average family incomes.
+
+Although damaging to our overall model, we choose to keep these influential observations and similar ones to it, since excluding them has the potential to weaken the real-world explanatory power of our model for very or fairly statistically extreme institutions.
+
+## Check error assumptions
+
+### Standardized Residuals with Fitted Values
+```{r, echo = FALSE}
+residualPlot(lmod_final, type = "rstandard", quadratic = FALSE)
+```
+
+### Standardized Residuals with `region`
+```{r, echo = FALSE}
+residualPlot(lmod_final, variable = "region", type = "rstandard", quadratic = FALSE)
+```
+
+### Standardized Residuals with `admission_rate`
+```{r, echo = FALSE}
+residualPlot(lmod_final, variable = "admission_rate", type = "rstandard", quadratic = FALSE)
+```
+
+### Standardized Residuals with `faculty_salary_avg`
+```{r, echo = FALSE}
+residualPlot(lmod_final, variable = "faculty_salary_avg", type = "rstandard", quadratic = FALSE)
+```
+
+### Standardized Residuals with `family_income`
+```{r, echo = FALSE}
+residualPlot(lmod_final, variable = "family_income", type = "rstandard", quadratic = FALSE)
+```
+
+### Standardized Residuals with `sqrt(family_income)`
+```{r, echo = FALSE}
+residualPlot(lmod_final, variable = "sqrt(family_income)", type = "rstandard", quadratic = FALSE)
+```
+
+### Standardized Residuals with `log(expenditure_per_student)`
+```{r, echo = FALSE}
+residualPlot(lmod_final, variable = "log(expenditure_per_student)", type = "rstandard", quadratic = FALSE)
+```
+
+### Standardized Residuals with `debt_median_all`
+```{r, echo = FALSE}
+residualPlot(lmod_final, variable = "debt_median_all", type = "rstandard", quadratic = FALSE)
+```
+
+## Checking Normality
+
+### Q-Q Plot
+```{r, echo = FALSE}
+qqnorm(inst_data$completion_rate_200)
+qqline(inst_data$completion_rate_200)
+```
+
+### Shapiro-Wilk Test
+```{r, echo = FALSE}
+shapiro.test(rstandard(lmod_final))
+```
+
+*Explain what you did and your conclusions.*
+
+We created and analyzed standardized residual plots, for the fitted values and for regressors in our model. Unfortunately, this revealed that only the `region`, `admission_rate`, and `debt_median_all` regressors satisfy the constant-error variance assumption. The scatter plot for the fitted values revealed that the standardized residuals decrease as the fitted values increase. This same trend, interestingly, is shared by all the regressors that violate the constant-error variance assumption.
+
+We also employed the Shapiro-Wilk normality test after observing potentially promising results with the Q-Q plot, which unfortunately revealed strong evidence that our residuals, and thus our errors, are not normally distributed.
+
+Overall, this reveals that our model is, unfortunately, unsatisfactory in regards to the constant-variance and normality assumptions about our errors.
+
+# Interpretation
+
+## `region` Effect Plot
+
+```{r, echo = FALSE}
+plot(predictorEffect("region", lmod_final),
+     axes = list(x = list(rotate = 90)))
+```
+
+This plot demonstrates the different effects that regions have on admission rates. The `us_service_schools` region tends to have higher completion rates, but the confidence interval is so large that it cannot be considered significant, whereas the `outlying_areas` region also has higher completion rates than the other regions, but its confidence interval is reasonably small enough to consider it as significant. Each of the other regions have lower completion rates and small enough confidence intervals that they are significant.
+
+## `admission_rate` Effect Plot
+
+```{r, echo = FALSE}
+plot(predictorEffect("admission_rate",lmod_final))
+```
+
+This plot shows that admission rates have a negative linear relationship with completion rates, meaning that higher admission rates have a negative impact on college completion rates. Since the associated p-value for `admission_rate` is 1.91e-08, it is statistically significant.
+
+## `faculty_salary_avg` Effect Plot
+
+```{r, echo = FALSE}
+plot(predictorEffect("faculty_salary_avg",lmod_final))
+```
+
+This plot shows that the average faculty salary has a positive linear relationship with completion rates, meaning that higher average faculty salaries positively impact college completion rates. Since the associated p-value for `faculty_salary_avg` is 2e-16 and its confidence interval is narrow, it is very significant.
+
+## `family_income` Effect Plot
+
+```{r, echo = FALSE}
+plot(predictorEffect("family_income",lmod_final))
+```
+
+This plot shows that a student's family income has a positive, but non-linear relationship with completion rates, meaning that higher family incomes positively impact college completion rates. Since the relationship is non-linear and as determined by the different slopes, it appears that family incomes below $50,000 have a more variable impact than higher family incomes. Since the associated p-value for `family_income` is 0.2466, it is not as significant as the others.
+
+## `expenditure_per_student` Effect Plot
+
+```{r, echo = FALSE}
+plot(predictorEffect("expenditure_per_student",lmod_final))
+```
+
+This plot shows that a college's expenditures per student has a positive, but non-linear relationship with completion rates, meaning that higher expenditures positively impact college completion rates. Since the relationship is non-linear and as determined by the changing slope, it appears that expenditures below $20,000 have a much more variable impact than higher expenditures. Since the associated p-value for `expenditure_per_student` is 2e-16, it is significant.
+
+## `debt_median_all` Effect Plot
+
+```{r, echo = FALSE}
+plot(predictorEffect("debt_median_all",lmod_final))
+```
+
+This plot shows that student debt has a positive linear relationship with completion rates, meaning that higher debts seem to positively impact college completion rates. Since the associated p-value for `debt_median_all` is 4.64e-12, it is significant.
+
+# Conclusions
+
+## Summary of results
+
+The overall relationship between the response variable and the predictors suggests that colleges tend to have higher rates of completion when they have lower admission rates,  maintain higher faculty salaries, have students from higher income families, spend more money on students, and have students with higher debts.
+
+This relationship makes sense because lower admission rates could mean that a college chooses students with better academic records, higher faculty salaries means they attract better quality professors, and spending more on students could mean that there are more resources for student success. These all logically seem like they would be associated with higher completion rates. Having students from higher income families and students with higher debts also make sense being associated with higher completion rates because colleges that are expensive are better able to pay large faculty salaries and have higher expenses per student, and expensive colleges will most likely have either students from families with higher incomes or larger debts.
+
+## Public policy recommendations
+
+In light of our final model, we recommend that colleges pay higher salaries to their faculty in order to attract better quality professors and that they maintain high expenses per student so that they may provide students with the resources to help them succeed and ultimately graduate.
+
+We do not want to recommend that colleges have lower admission rates or choose students from families with higher incomes or with higher debts, but realize that these may be a secondary result from our recommendations to pay higher salaries and spend more on students.
+
+A further exploration on whether or not lower admission rates, higher student family incomes, and higher student debts impact completion rates on their own or whether they impact completion rates through association with other factors.
+
+## Improvements
+
+Since nearly 70% of our response values contained NA's, our data was limited and may have had some bias because our model was based on only those colleges that had all data points available. A potential improvement would be to remedy this situation by completing a more thorough study based on these factors that has available data for each institution.
+
+Additionally, because our model did not satisfy the constant-variance and normality assumptions it would be worthwhile to consider different variables transformations and/or data sources in the future.
